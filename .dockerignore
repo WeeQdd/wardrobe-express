@@ -1,0 +1,11 @@
+.git
+.vscode
+venv
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+my_base.db
+*.db
