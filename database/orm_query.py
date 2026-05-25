@@ -355,6 +355,85 @@ async def orm_get_user_active_batch_orders(session: AsyncSession, telegram_user_
     return result.scalars().all()
 
 
+async def orm_get_user_draft_order(session: AsyncSession, telegram_user_id: int, order_id: int):
+    user = await orm_get_user(session, telegram_user_id)
+    if user is None or not user.active_batch_code:
+        return None
+
+    result = await session.execute(
+        select(Order).where(
+            Order.id == order_id,
+            Order.user_id == user.id,
+            Order.batch_code == user.active_batch_code,
+            Order.status == "draft",
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def orm_update_user_draft_order(
+    session: AsyncSession,
+    telegram_user_id: int,
+    order_id: int,
+    *,
+    product_name: str | None = None,
+    size: str | None = None,
+    source_url: str | None = None,
+    price: float | None = None,
+):
+    order = await orm_get_user_draft_order(session, telegram_user_id, order_id)
+    if order is None:
+        return None
+
+    if product_name is not None:
+        order.product_name = product_name
+    if size is not None:
+        order.size = size
+    if source_url is not None:
+        order.source_url = source_url
+    if price is not None:
+        pricing = calculate_order_totals(price)
+        order.price = pricing["price"]
+        order.service_fee = pricing["service_fee"]
+        order.delivery_fee = pricing["delivery_fee"]
+        order.total_price = pricing["total_price"]
+
+    await session.commit()
+    await session.refresh(order)
+    return order
+
+
+async def orm_delete_user_draft_order(session: AsyncSession, telegram_user_id: int, order_id: int) -> bool:
+    user = await orm_get_user(session, telegram_user_id)
+    if user is None or not user.active_batch_code:
+        return False
+
+    result = await session.execute(
+        delete(Order).where(
+            Order.id == order_id,
+            Order.user_id == user.id,
+            Order.batch_code == user.active_batch_code,
+            Order.status == "draft",
+        )
+    )
+    if not result.rowcount:
+        await session.rollback()
+        return False
+
+    remaining_result = await session.execute(
+        select(func.count(Order.id)).where(
+            Order.user_id == user.id,
+            Order.batch_code == user.active_batch_code,
+            Order.status == "draft",
+        )
+    )
+    if remaining_result.scalar_one() == 0:
+        user.active_batch_code = None
+
+    await session.commit()
+    return True
+
+
 async def orm_get_orders_by_batch_code(session: AsyncSession, batch_code: str):
     result = await session.execute(
         select(Order).where(Order.batch_code == batch_code).order_by(Order.created.asc(), Order.id.asc())

@@ -218,8 +218,8 @@ async def get_menu_content(
     if menu_name == "order":
         return await order_page(session)
     if menu_name == "in_stock":
+        if category is not None:
+            return await items(session, level, category, page or 1)
         return await catalog(session, level, menu_name)
-    if level == 2 and category is not None:
-        return await items(session, level, category, page or 1)
 
     return await main_menu(session, 0, "main")

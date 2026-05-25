@@ -57,12 +57,21 @@ class AdminMessageToClient(StatesGroup):
     text = State()
 
 
+ADMIN_BTN_ADD_ITEM = "➕ Добавить товар"
+ADMIN_BTN_CATALOG = "🛍 Ассортимент"
+ADMIN_BTN_ORDERS = "📦 Заказы"
+ADMIN_BTN_CLIENTS = "👤 Клиенты"
+ADMIN_BTN_BANNER = "🖼 Добавить/Изменить баннер"
+ADMIN_BTN_CANCEL = "❌ Отмена"
+ADMIN_BTN_BACK = "⬅️ Назад"
+
+
 ADMIN_KB = get_keyboard(
-    "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0442\u043e\u0432\u0430\u0440",
-    "\u0410\u0441\u0441\u043e\u0440\u0442\u0438\u043c\u0435\u043d\u0442",
-    "\u0417\u0430\u043a\u0430\u0437\u044b",
-    "\u041a\u043b\u0438\u0435\u043d\u0442\u044b",
-    "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c/\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u0431\u0430\u043d\u043d\u0435\u0440",
+    ADMIN_BTN_ADD_ITEM,
+    ADMIN_BTN_CATALOG,
+    ADMIN_BTN_ORDERS,
+    ADMIN_BTN_CLIENTS,
+    ADMIN_BTN_BANNER,
     placeholder="\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435",
     sizes=(2, 2, 1),
 )
@@ -177,7 +186,7 @@ async def admin_features(message: types.Message):
 
 
 @admin_router.message(Command("orders"))
-@admin_router.message(F.text == "\u0417\u0430\u043a\u0430\u0437\u044b")
+@admin_router.message(F.text == ADMIN_BTN_ORDERS)
 async def show_orders(message: types.Message, session: AsyncSession):
     orders = await orm_get_orders(session)
     if not orders:
@@ -221,7 +230,7 @@ async def admin_order_detail(callback: types.CallbackQuery, session: AsyncSessio
     await callback.answer()
 
 
-@admin_router.message(F.text == "\u041a\u043b\u0438\u0435\u043d\u0442\u044b")
+@admin_router.message(F.text == ADMIN_BTN_CLIENTS)
 async def show_clients(message: types.Message, session: AsyncSession):
     clients = await orm_get_clients(session)
     if not clients:
@@ -263,7 +272,7 @@ async def admin_message_start(callback: types.CallbackQuery, state: FSMContext, 
     await state.update_data(order_id=order.id, user_telegram_id=user.user_id)
     await callback.message.answer(
         f"\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u0434\u043b\u044f \u043a\u043b\u0438\u0435\u043d\u0442\u0430 \u043f\u043e \u0437\u0430\u043a\u0430\u0437\u0443 #{order.id}.",
-        reply_markup=get_keyboard("\u041e\u0442\u043c\u0435\u043d\u0430", sizes=(1,)),
+        reply_markup=get_keyboard(ADMIN_BTN_CANCEL, sizes=(1,)),
     )
     await callback.answer()
 
@@ -271,7 +280,7 @@ async def admin_message_start(callback: types.CallbackQuery, state: FSMContext, 
 @admin_router.message(AdminMessageToClient.text, F.text)
 async def admin_message_send(message: types.Message, state: FSMContext):
     text = message.text.strip()
-    if text.casefold() == "\u043e\u0442\u043c\u0435\u043d\u0430":
+    if text == ADMIN_BTN_CANCEL or text.casefold() == "\u043e\u0442\u043c\u0435\u043d\u0430":
         await state.clear()
         await message.answer(
             "\u041e\u0442\u043f\u0440\u0430\u0432\u043a\u0430 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u0430.",
@@ -360,7 +369,7 @@ async def admin_delete_order(callback: types.CallbackQuery, session: AsyncSessio
     await callback.answer("\u0417\u0430\u043a\u0430\u0437 \u0443\u0434\u0430\u043b\u0435\u043d")
 
 
-@admin_router.message(F.text == "\u0410\u0441\u0441\u043e\u0440\u0442\u0438\u043c\u0435\u043d\u0442")
+@admin_router.message(F.text == ADMIN_BTN_CATALOG)
 async def show_catalog(message: types.Message, session: AsyncSession):
     categories = await orm_get_categories(session)
     btns = {category.name: f"category_{category.id}" for category in categories}
@@ -408,7 +417,7 @@ class AddBanner(StatesGroup):
     image = State()
 
 
-@admin_router.message(StateFilter(None), F.text == "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c/\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u0431\u0430\u043d\u043d\u0435\u0440")
+@admin_router.message(StateFilter(None), F.text == ADMIN_BTN_BANNER)
 async def add_banner_prompt(message: types.Message, state: FSMContext):
     pages_names = list(description_for_info_pages.keys())
     await message.answer(
@@ -489,7 +498,7 @@ async def change_product_callback(
     await state.set_state(AddProduct.name)
 
 
-@admin_router.message(StateFilter(None), F.text == "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0442\u043e\u0432\u0430\u0440")
+@admin_router.message(StateFilter(None), F.text == ADMIN_BTN_ADD_ITEM)
 async def add_item(message: types.Message, state: FSMContext):
     await message.answer(
         "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u0442\u043e\u0432\u0430\u0440\u0430",
@@ -499,7 +508,7 @@ async def add_item(message: types.Message, state: FSMContext):
 
 
 @admin_router.message(StateFilter("*"), Command("\u043e\u0442\u043c\u0435\u043d\u0430"))
-@admin_router.message(StateFilter("*"), F.text.casefold() == "\u043e\u0442\u043c\u0435\u043d\u0430")
+@admin_router.message(StateFilter("*"), or_f(F.text.casefold() == "\u043e\u0442\u043c\u0435\u043d\u0430", F.text == ADMIN_BTN_CANCEL))
 async def cancel_handler(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is None:
@@ -511,7 +520,7 @@ async def cancel_handler(message: types.Message, state: FSMContext):
 
 
 @admin_router.message(StateFilter("*"), Command("\u043d\u0430\u0437\u0430\u0434"))
-@admin_router.message(StateFilter("*"), F.text.casefold() == "\u043d\u0430\u0437\u0430\u0434")
+@admin_router.message(StateFilter("*"), or_f(F.text.casefold() == "\u043d\u0430\u0437\u0430\u0434", F.text == ADMIN_BTN_BACK))
 async def back_step_handler(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
 

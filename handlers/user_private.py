@@ -15,24 +15,27 @@ from database.orm_query import (
     orm_add_order_to_active_batch,
     orm_add_user,
     orm_cancel_active_batch,
-    orm_delete_order,
+    orm_delete_user_draft_order,
     orm_finalize_active_batch,
     orm_get_item,
     orm_get_order,
     orm_get_user,
+    orm_get_user_draft_order,
     orm_get_user_order,
     orm_get_user_active_batch_orders,
     orm_get_user_saved_address,
     orm_get_user_saved_addresses,
     orm_update_order_status,
+    orm_update_user_draft_order,
     orm_update_user_delivery_profile,
 )
 from filters.chat_types import ChatTypeFilter
 from handlers.converter import calculate_order_pricing, converter_rate, normalize_currency
 from handlers.menu_processing import get_menu_content
 from kbds.inline import (
+    get_batch_item_detail_btns,
+    get_batch_item_list_btns,
     MenuCallBack,
-    get_batch_actions_btns,
     get_converter_currency_btns,
     get_inlineMix_btns,
     get_order_status_emoji,
@@ -48,6 +51,16 @@ from services.yandex_geocoder import YandexGeocoderError, geocode_address, rever
 
 user_private_router = Router()
 user_private_router.message.filter(ChatTypeFilter(["private"]))
+
+
+USER_BTN_CANCEL = "❌ Отмена"
+USER_BTN_SEND_PHONE = "📞 Отправить номер телефона"
+USER_BTN_SEND_LOCATION = "📍 Отправить геопозицию"
+
+
+def is_cancel_text(value: str) -> bool:
+    normalized = (value or "").strip().casefold()
+    return normalized in {"отмена", USER_BTN_CANCEL.casefold()}
 
 
 ORDER_STATUS_LABELS = {
@@ -86,6 +99,10 @@ class OrderFlow(StatesGroup):
     delivery_address = State()
     pickup_choice = State()
     custom_pickup = State()
+    edit_product_name = State()
+    edit_size = State()
+    edit_source_url = State()
+    edit_price = State()
 
 
 def format_price(value: float | None) -> str:
@@ -164,6 +181,19 @@ def format_batch_summary(orders: list) -> str:
     return "\n".join(lines)
 
 
+def format_batch_item_detail(order) -> str:
+    source_url = order.source_url or "не указана"
+    return (
+        f"Позиция #{order.id}\n"
+        f"Товар: {safe_text(order.product_name)}\n"
+        f"Размер: {safe_text(order.size)}\n"
+        f"Ссылка: {safe_text(source_url)}\n"
+        f"Сумма товара: {safe_text(format_price(order.price))}\n"
+        f"Доставка: {safe_text(format_price(order.delivery_fee))}\n"
+        f"Итог: {safe_text(format_price(order.total_price))}"
+    )
+
+
 def can_user_cancel_order(status: str) -> bool:
     return status not in {"done", "cancelled"}
 
@@ -190,10 +220,10 @@ def get_pickup_choice_markup(options_count: int) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardBuilder()
 
     for index in range(options_count):
-        keyboard.button(text=f"Пункт {index + 1}", callback_data=f"pickup_select_{index}")
+        keyboard.button(text=f"📍 Пункт {index + 1}", callback_data=f"pickup_select_{index}")
 
-    keyboard.button(text="Указать свой ПВЗ", callback_data="pickup_manual")
-    keyboard.button(text="Пропустить", callback_data="pickup_skip")
+    keyboard.button(text="✏️ Указать свой ПВЗ", callback_data="pickup_manual")
+    keyboard.button(text="⏭ Пропустить", callback_data="pickup_skip")
     keyboard.adjust(3, 1, 1)
     return keyboard.as_markup()
 
@@ -211,8 +241,8 @@ async def ask_for_phone(message: types.Message, current_phone: str | None = None
     await message.answer(
         prompt,
         reply_markup=get_keyboard(
-            "Отправить номер телефона",
-            "Отмена",
+            USER_BTN_SEND_PHONE,
+            USER_BTN_CANCEL,
             request_contact=0,
             sizes=(1, 1),
         ),
@@ -230,8 +260,8 @@ async def ask_for_address(message: types.Message, current_address: str | None = 
     await message.answer(
         prompt,
         reply_markup=get_keyboard(
-            "Отправить геопозицию",
-            "Отмена",
+            USER_BTN_SEND_LOCATION,
+            USER_BTN_CANCEL,
             request_location=0,
             sizes=(1, 1),
         ),
@@ -305,7 +335,7 @@ async def prompt_pickup_selection(message: types.Message, state: FSMContext, res
 
 async def handle_delivery_text(message: types.Message, state: FSMContext):
     address = message.text.strip()
-    if address.casefold() == "отмена":
+    if is_cancel_text(address):
         await state.clear()
         await message.answer("Оформление заказа отменено.", reply_markup=types.ReplyKeyboardRemove())
         return
@@ -382,7 +412,7 @@ async def show_batch_actions(message: types.Message, session: AsyncSession, tele
 
     await message.answer(
         prefix + format_batch_summary(active_orders),
-        reply_markup=get_batch_actions_btns(),
+        reply_markup=get_batch_item_list_btns(active_orders),
     )
 
 
@@ -461,7 +491,7 @@ def format_admin_batch_text(orders: list, user, telegram_user: types.User, batch
     ]
 
     for index, order in enumerate(orders, start=1):
-        source = "РЅРµ СѓРєР°Р·Р°РЅ"
+        source = "не указан"
         item_lines = [
             f"{index}. {safe_text(order.product_name)}",
             f"Размер: {safe_text(order.size)}",
@@ -646,7 +676,7 @@ async def link_order_get_url(message: types.Message, state: FSMContext):
 
     await state.update_data(source_url=url)
     await state.set_state(OrderFlow.product_name)
-    await message.answer("РЎСЃС‹Р»РєР° СЃРѕС…СЂР°РЅРµРЅР°. Р’РІРµРґРёС‚Рµ РЅР°Р·РІР°РЅРёРµ С‚РѕРІР°СЂР°.")
+    await message.answer("Ссылка сохранена. Введите название товара.")
     return
 
 
@@ -712,7 +742,7 @@ async def link_order_get_price(message: types.Message, state: FSMContext):
 @user_private_router.message(OrderFlow.currency, F.text)
 async def link_order_get_currency(message: types.Message, state: FSMContext):
     currency_raw = message.text.strip()
-    if currency_raw.casefold() == "отмена":
+    if is_cancel_text(currency_raw):
         await state.clear()
         await message.answer("Оформление заказа отменено.", reply_markup=types.ReplyKeyboardRemove())
         return
@@ -935,9 +965,108 @@ async def batch_open(callback: types.CallbackQuery, session: AsyncSession):
 
     await callback.message.answer(
         format_batch_summary(active_orders),
-        reply_markup=get_batch_actions_btns(),
+        reply_markup=get_batch_item_list_btns(active_orders),
     )
     await callback.answer()
+
+
+@user_private_router.callback_query(F.data.startswith("batchitem_"))
+async def batch_item_open(callback: types.CallbackQuery, session: AsyncSession):
+    order_id = int(callback.data.split("_")[-1])
+    order = await orm_get_user_draft_order(session, callback.from_user.id, order_id)
+    if order is None:
+        await callback.answer("Позиция не найдена", show_alert=True)
+        return
+
+    await callback.message.answer(
+        format_batch_item_detail(order),
+        reply_markup=get_batch_item_detail_btns(order.id),
+    )
+    await callback.answer()
+
+
+@user_private_router.callback_query(F.data.startswith("batchdelete_"))
+async def batch_item_delete(callback: types.CallbackQuery, session: AsyncSession):
+    order_id = int(callback.data.split("_")[-1])
+    deleted = await orm_delete_user_draft_order(session, callback.from_user.id, order_id)
+    if not deleted:
+        await callback.answer("Позиция не найдена", show_alert=True)
+        return
+
+    active_orders = await orm_get_user_active_batch_orders(session, callback.from_user.id)
+    if not active_orders:
+        await callback.message.answer("Текущая заявка теперь пуста.")
+    else:
+        await callback.message.answer(
+            "Позиция удалена.\n\n" + format_batch_summary(active_orders),
+            reply_markup=get_batch_item_list_btns(active_orders),
+        )
+    await callback.answer("Позиция удалена")
+
+
+async def start_batch_item_edit(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    *,
+    field_state,
+    prompt: str,
+):
+    order_id = int(callback.data.split("_")[-1])
+    order = await orm_get_user_draft_order(session, callback.from_user.id, order_id)
+    if order is None:
+        await callback.answer("Позиция не найдена", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(edit_order_id=order.id)
+    await state.set_state(field_state)
+    await callback.message.answer(prompt)
+    await callback.answer()
+
+
+@user_private_router.callback_query(F.data.startswith("batchedit_name_"))
+async def batch_edit_name_start(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    await start_batch_item_edit(
+        callback,
+        state,
+        session,
+        field_state=OrderFlow.edit_product_name,
+        prompt="Введите новое название товара.",
+    )
+
+
+@user_private_router.callback_query(F.data.startswith("batchedit_size_"))
+async def batch_edit_size_start(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    await start_batch_item_edit(
+        callback,
+        state,
+        session,
+        field_state=OrderFlow.edit_size,
+        prompt='Введите новый размер или "." если размер не указан.',
+    )
+
+
+@user_private_router.callback_query(F.data.startswith("batchedit_url_"))
+async def batch_edit_url_start(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    await start_batch_item_edit(
+        callback,
+        state,
+        session,
+        field_state=OrderFlow.edit_source_url,
+        prompt='Отправьте новую ссылку на товар или "." чтобы убрать ссылку.',
+    )
+
+
+@user_private_router.callback_query(F.data.startswith("batchedit_price_"))
+async def batch_edit_price_start(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    await start_batch_item_edit(
+        callback,
+        state,
+        session,
+        field_state=OrderFlow.edit_price,
+        prompt="Введите новую цену товара в рублях.",
+    )
 
 
 @user_private_router.callback_query(F.data == "batch_cancel")
@@ -986,14 +1115,83 @@ async def batch_finalize(callback: types.CallbackQuery, session: AsyncSession):
         text,
         reply_markup=get_inlineMix_btns(
             btns={
-                "Мои заявки": MenuCallBack(level=1, menu_name="myorders").pack(),
-                "Профиль": MenuCallBack(level=1, menu_name="profile").pack(),
-                "В меню": MenuCallBack(level=0, menu_name="main").pack(),
+                "📦 Мои заявки": MenuCallBack(level=1, menu_name="myorders").pack(),
+                "👤 Профиль": MenuCallBack(level=1, menu_name="profile").pack(),
+                "🏠 В меню": MenuCallBack(level=0, menu_name="main").pack(),
             },
             sizes=(1, 1, 1),
         ),
     )
     await callback.answer()
+
+
+async def finish_batch_item_edit(message: types.Message, state: FSMContext, session: AsyncSession, **kwargs):
+    data = await state.get_data()
+    order_id = data.get("edit_order_id")
+    if not order_id:
+        await state.clear()
+        await message.answer("Не удалось определить позицию для редактирования.")
+        return
+
+    order = await orm_update_user_draft_order(
+        session,
+        message.from_user.id,
+        int(order_id),
+        **kwargs,
+    )
+    await state.clear()
+    if order is None:
+        await message.answer("Позиция не найдена.")
+        return
+
+    await message.answer(
+        "Позиция обновлена.\n\n" + format_batch_item_detail(order),
+        reply_markup=get_batch_item_detail_btns(order.id),
+    )
+
+
+@user_private_router.message(OrderFlow.edit_product_name, F.text)
+async def batch_edit_name_finish(message: types.Message, state: FSMContext, session: AsyncSession):
+    product_name = message.text.strip()
+    if len(product_name) < 2:
+        await message.answer("Введите более понятное название товара.")
+        return
+
+    await finish_batch_item_edit(message, state, session, product_name=product_name)
+
+
+@user_private_router.message(OrderFlow.edit_size, F.text)
+async def batch_edit_size_finish(message: types.Message, state: FSMContext, session: AsyncSession):
+    size = message.text.strip()
+    if size == ".":
+        size = "не указан"
+    elif len(size) < 1:
+        await message.answer("Введите размер товара.")
+        return
+
+    await finish_batch_item_edit(message, state, session, size=size)
+
+
+@user_private_router.message(OrderFlow.edit_source_url, F.text)
+async def batch_edit_url_finish(message: types.Message, state: FSMContext, session: AsyncSession):
+    source_url = message.text.strip()
+    if source_url == ".":
+        source_url = None
+    elif not is_valid_url(source_url):
+        await message.answer('Отправьте корректную ссылку или "." чтобы убрать ссылку.')
+        return
+
+    await finish_batch_item_edit(message, state, session, source_url=source_url)
+
+
+@user_private_router.message(OrderFlow.edit_price, F.text)
+async def batch_edit_price_finish(message: types.Message, state: FSMContext, session: AsyncSession):
+    price = parse_price_input(message.text)
+    if price is None:
+        await message.answer("Введите корректную цену товара в рублях, например 4990.")
+        return
+
+    await finish_batch_item_edit(message, state, session, price=price)
 
 
 # Конвертер специально оставлен вне схемы "одно сообщение",
@@ -1004,10 +1202,10 @@ async def converter_menu(callback: types.CallbackQuery):
         caption="Выберите валюту для расчета стоимости товара и его доставки.",
         reply_markup=get_inlineMix_btns(
             btns={
-                "Юань": "convertercny_",
-                "Евро": "convertereur_",
-                "Доллар": "converterusd_",
-                "Меню": "mainmenu_",
+                "🇨🇳 Юань": "convertercny_",
+                "🇪🇺 Евро": "convertereur_",
+                "🇺🇸 Доллар": "converterusd_",
+                "🏠 Меню": "mainmenu_",
             },
             sizes=(2, 1, 1),
         ),
@@ -1018,7 +1216,7 @@ async def converter_menu(callback: types.CallbackQuery):
 async def converter_cny(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_caption(
         caption="Введите цену в юанях",
-        reply_markup=get_inlineMix_btns(btns={"Назад": "converter_"}),
+        reply_markup=get_inlineMix_btns(btns={"⬅️ Назад": "converter_"}),
     )
     await state.update_data(currency="cny", msg_del=callback.message.message_id)
     await state.set_state(ConverterStates.price)
@@ -1028,7 +1226,7 @@ async def converter_cny(callback: types.CallbackQuery, state: FSMContext):
 async def converter_eur(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_caption(
         caption="Введите цену в евро",
-        reply_markup=get_inlineMix_btns(btns={"Назад": "converter_"}),
+        reply_markup=get_inlineMix_btns(btns={"⬅️ Назад": "converter_"}),
     )
     await state.update_data(currency="eur", msg_del=callback.message.message_id)
     await state.set_state(ConverterStates.price)
@@ -1038,7 +1236,7 @@ async def converter_eur(callback: types.CallbackQuery, state: FSMContext):
 async def converter_usd(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_caption(
         caption="Введите цену в долларах",
-        reply_markup=get_inlineMix_btns(btns={"Назад": "converter_"}),
+        reply_markup=get_inlineMix_btns(btns={"⬅️ Назад": "converter_"}),
     )
     await state.update_data(currency="usd", msg_del=callback.message.message_id)
     await state.set_state(ConverterStates.price)
@@ -1065,8 +1263,8 @@ async def process_price(message: types.Message, state: FSMContext):
             result,
             reply_markup=get_inlineMix_btns(
                 btns={
-                    "Оформить доставку": MenuCallBack(level=1, menu_name="order").pack(),
-                    "В меню": "mainmenu_",
+                    "📝 Оформить доставку": MenuCallBack(level=1, menu_name="order").pack(),
+                    "🏠 В меню": "mainmenu_",
                 },
                 sizes=(1, 1),
             ),
